@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WikiRAG — Wikipedia, Distilled</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0d0b;
+    --surface: #1a1815;
+    --surface-raised: #211e19;
+    --border: #322d24;
+    --text: #f5f1e8;
+    --text-dim: #8c8576;
+    --text-faint: #5e594c;
+    --amber: #d4a24c;
+    --amber-dim: #8a6d35;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse 800px 500px at 50% -10%, rgba(212,162,76,0.08), transparent),
+      radial-gradient(ellipse 600px 400px at 90% 90%, rgba(212,162,76,0.04), transparent);
+  }
+
+  .shell {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 24px 140px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    padding: 64px 0 28px;
+    text-align: center;
+    position: relative;
+  }
+
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--amber-dim);
+    margin-bottom: 14px;
+  }
+
+  h1 {
+    font-family: 'Fraunces', serif;
+    font-optical-sizing: auto;
+    font-weight: 600;
+    font-size: clamp(36px, 7vw, 56px);
+    letter-spacing: -0.01em;
+    margin: 0;
+    line-height: 1.05;
+  }
+
+  h1 .glow {
+    color: var(--amber);
+  }
+
+  .rule {
+    width: 64px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--amber), transparent);
+    margin: 22px auto 18px;
+  }
+
+  .tagline {
+    color: var(--text-dim);
+    font-size: 15px;
+    max-width: 420px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+
+  /* ---------- Quick examples ---------- */
+  .examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    margin: 30px 0 8px;
+  }
+
+  .example-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .example-chip:hover {
+    border-color: var(--amber-dim);
+    color: var(--amber);
+    background: rgba(212,162,76,0.06);
+  }
+
+  /* ---------- Chat stream ---------- */
+  .stream {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 36px;
+  }
+
+  .msg {
+    display: flex;
+    flex-direction: column;
+    animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .msg.user {
+    align-self: flex-end;
+    max-width: 78%;
+    margin: 10px 0;
+  }
+
+  .msg.user .bubble {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 16px 16px 4px 16px;
+    padding: 13px 18px;
+    font-size: 15px;
+    color: var(--text);
+  }
+
+  .msg.assistant {
+    align-self: flex-start;
+    max-width: 100%;
+    margin: 14px 0;
+  }
+
+  .assistant-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .assistant-label::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--amber);
+  }
+
+  .answer-text {
+    font-size: 16px;
+    line-height: 1.7;
+    color: var(--text);
+  }
+
+  /* ---------- Footnote-style sources ---------- */
+  .footnote {
+    margin-top: 14px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .footnote.open {
+    max-height: 200px;
+  }
+
+  .footnote-inner {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .footnote-toggle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--amber-dim);
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 4px 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .footnote-toggle:hover { color: var(--amber); }
+
+  .footnote-toggle .chev {
+    transition: transform 0.3s ease;
+    font-size: 9px;
+  }
+
+  .footnote-toggle.open .chev {
+    transform: rotate(90deg);
+  }
+
+  .footnote a {
+    color: var(--text-dim);
+    font-size: 13px;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--text-faint);
+    transition: color 0.2s;
+  }
+
+  .footnote a:hover {
+    color: var(--amber);
+  }
+
+  /* ---------- Loading state ---------- */
+  .thinking {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-faint);
+    font-size: 14px;
+    font-style: italic;
+  }
+
+  .thinking .lamp {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 8px 2px rgba(212,162,76,0.5);
+    animation: flicker 1.4s ease-in-out infinite;
+  }
+
+  @keyframes flicker {
+    0%, 100% { opacity: 0.4; box-shadow: 0 0 4px 1px rgba(212,162,76,0.3); }
+    50% { opacity: 1; box-shadow: 0 0 12px 3px rgba(212,162,76,0.6); }
+  }
+
+  /* ---------- Input dock ---------- */
+  .dock {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    padding: 22px 24px 28px;
+    background: linear-gradient(to top, var(--bg) 50%, transparent);
+    pointer-events: none;
+  }
+
+  .dock-inner {
+    width: 100%;
+    max-width: 760px;
+    pointer-events: all;
+    position: relative;
+  }
+
+  .input-glow {
+    position: absolute;
+    inset: -2px;
+    border-radius: 18px;
+    background: radial-gradient(circle at 30% 0%, rgba(212,162,76,0.18), transparent 70%);
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+
+  .input-wrap:focus-within + .input-glow,
+  .input-wrap.focused ~ .input-glow {
+    opacity: 1;
+  }
+
+  .input-wrap {
+    display: flex;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 6px 6px 6px 20px;
+    position: relative;
+    transition: border-color 0.3s ease;
+  }
+
+  .input-wrap.focused {
+    border-color: var(--amber-dim);
+  }
+
+  .input-wrap input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 15px;
+    padding: 14px 8px;
+  }
+
+  .input-wrap input::placeholder {
+    color: var(--text-faint);
+  }
+
+  .send-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    background: var(--amber);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s ease;
+  }
+
+  .send-btn:hover { transform: scale(1.05); }
+  .send-btn:active { transform: scale(0.95); }
+  .send-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+
+  .send-btn svg { width: 16px; height: 16px; }
+
+  .footer-credit {
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    margin-top: 18px;
+  }
+
+  /* ---------- Mobile ---------- */
+  @media (max-width: 640px) {
+    .shell { padding: 0 16px 130px; }
+    header { padding: 40px 0 20px; }
+    h1 { font-size: 32px; }
+    .tagline { font-size: 14px; }
+    .msg.user { max-width: 88%; }
+    .dock { padding: 16px 16px 20px; }
+    .input-wrap input { font-size: 16px; } /* prevents iOS zoom */
+    .examples { gap: 8px; }
+    .example-chip { font-size: 11.5px; padding: 7px 13px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header>
+    <div class="eyebrow">Local · Cited · Always Open</div>
+    <h1>Wiki<span class="glow">RAG</span></h1>
+    <div class="rule"></div>
+    <p class="tagline">Ask anything. Every answer is pulled live from Wikipedia and cited beneath, like a footnote.</p>
+
+    <div class="examples" id="examples">
+      <button class="example-chip" data-q="MS Dhoni South Africa match stats">MS Dhoni South Africa stats</button>
+      <button class="example-chip" data-q="What is the capital of Japan?">Capital of Japan</button>
+      <button class="example-chip" data-q="Who is Lewis Hamilton?">Lewis Hamilton</button>
+    </div>
+  </header>
+
+  <div class="stream" id="stream"></div>
+</div>
+
+<div class="dock">
+  <div class="dock-inner">
+    <div class="input-wrap" id="inputWrap">
+      <input type="text" id="input" placeholder="Ask anything about Wikipedia…" autocomplete="off" />
+      <button class="send-btn" id="sendBtn" disabled>
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 12L20 4L13 20L11 13L4 12Z" stroke="#0e0d0b" stroke-width="2" stroke-linejoin="round" fill="#0e0d0b"/>
+        </svg>
+      </button>
+    </div>
+    <div class="footer-credit">FastAPI · Ollama · ChromaDB — running locally</div>
+  </div>
+</div>
+
+<script>
+const API_URL = "http://127.0.0.1:8000/chat";
+
+const stream = document.getElementById('stream');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const inputWrap = document.getElementById('inputWrap');
+const examplesRow = document.getElementById('examples');
+
+let history = [];
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function addUserMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'msg user';
+  el.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+  stream.appendChild(el);
+  scrollToBottom();
+}
+
+function addThinking() {
+  const el = document.createElement('div');
+  el.className = 'msg assistant';
+  el.id = 'thinking-msg';
+  el.innerHTML = `
+    <div class="assistant-label">WikiRAG</div>
+    <div class="thinking"><span class="lamp"></span> Reading Wikipedia…</div>
+  `;
+  stream.appendChild(el);
+  scrollToBottom();
+  return el;
+}
+
+function addAssistantMessage(answer, sources, thinkingEl) {
+  const id = 'fn-' + Math.random().toString(36).slice(2);
+  const sourcesHtml = (sources && sources.length)
+    ? `
+      <div class="footnote" id="${id}">
+        <div class="footnote-inner">
+          ${sources.map(s => `<a href="${escapeHtml(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`).join('')}
+        </div>
+      </div>
+      <button class="footnote-toggle" data-target="${id}">
+        <span class="chev">▸</span> Sources (${sources.length})
+      </button>
+    `
+    : '';
+
+  thinkingEl.innerHTML = `
+    <div class="assistant-label">WikiRAG</div>
+    <div class="answer-text">${escapeHtml(answer)}</div>
+    ${sourcesHtml}
+  `;
+
+  const toggle = thinkingEl.querySelector('.footnote-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      const fn = document.getElementById(toggle.dataset.target);
+      fn.classList.toggle('open');
+      toggle.classList.toggle('open');
+    });
+  }
+
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+async function sendMessage(text) {
+  if (!text.trim()) return;
+
+  addUserMessage(text);
+  history.push({ role: 'user', content: text });
+  input.value = '';
+  sendBtn.disabled = true;
+
+  const thinkingEl = addThinking();
+
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: text, history: history })
+    });
+
+    if (!res.ok) throw new Error('Backend error');
+
+    const data = await res.json();
+    const answer = data.answer || "Sorry, I couldn't find an answer.";
+    const sources = data.sources || [];
+
+    addAssistantMessage(answer, sources, thinkingEl);
+    history.push({ role: 'assistant', content: answer });
+
+  } catch (err) {
+    thinkingEl.innerHTML = `
+      <div class="assistant-label">WikiRAG</div>
+      <div class="answer-text" style="color:#c0683f;">
+        Connection error — make sure the FastAPI backend is running on port 8000.
+      </div>
+    `;
+  }
+}
+
+sendBtn.addEventListener('click', () => sendMessage(input.value));
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendMessage(input.value);
+});
+
+input.addEventListener('input', () => {
+  sendBtn.disabled = input.value.trim().length === 0;
+});
+
+input.addEventListener('focus', () => inputWrap.classList.add('focused'));
+input.addEventListener('blur', () => inputWrap.classList.remove('focused'));
+
+examplesRow.addEventListener('click', (e) => {
+  const chip = e.target.closest('.example-chip');
+  if (chip) sendMessage(chip.dataset.q);
+});
+</script>
+
+</body>
+</html>

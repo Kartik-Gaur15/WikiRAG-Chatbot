@@ -1,0 +1,19 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.Python
+
+# Environment
+.env
+
+# Data / cache (regenerates automatically on first run)
+data/chroma_db/
+cache/
+logs/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
