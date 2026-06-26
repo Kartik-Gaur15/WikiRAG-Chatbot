@@ -31,7 +31,6 @@ GOOD_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
 def simple_embed(text: str, dim: int = 512) -> np.ndarray:
-    """Lightweight TF-IDF-style bag-of-words embedding. Zero dependencies."""
     vec = np.zeros(dim, dtype=np.float32)
     words = re.findall(r"[a-z]+", text.lower())
     for word in words:
@@ -51,7 +50,6 @@ class WikipediaRAG:
         if not api_key:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         self.groq = Groq(api_key=api_key)
-        # In-memory store: title -> {"chunks": [...], "embeddings": [...]}
         self._store: Dict[str, dict] = {}
         self._answer_cache: Dict[str, dict] = {}
 
@@ -74,7 +72,6 @@ class WikipediaRAG:
         if key in self._store:
             logger.info(f"Using cached index for '{page.title}'")
             return self._store[key]
-
         logger.info(f"Building index for '{page.title}'")
         chunks = self._chunk_text(page.content) or [page.summary]
         embeddings = [simple_embed(c) for c in chunks]
@@ -121,9 +118,36 @@ class WikipediaRAG:
         return best_url
 
     def _resolve_page(self, question: str):
+        # FIX: Use wikipedia.summary first to get the most relevant page
+        # then fall back to search if that fails
+        try:
+            # Try direct summary — this hits the most relevant page directly
+            summary = self._retry(
+                lambda: wikipedia.summary(question, sentences=1, auto_suggest=True)
+            )
+            # Now get the full page using the same query
+            return self._retry(
+                lambda: wikipedia.page(question, auto_suggest=True, redirect=True)
+            )
+        except wikipedia.DisambiguationError as e:
+            # Pick first option from disambiguation
+            if e.options:
+                try:
+                    return self._retry(
+                        lambda o=e.options[0]: wikipedia.page(o, auto_suggest=False, redirect=True)
+                    )
+                except Exception:
+                    pass
+        except wikipedia.PageError:
+            pass
+        except Exception:
+            pass
+
+        # Fall back to search
         results = self._retry(lambda: wikipedia.search(question, results=5))
         if not results:
             raise wikipedia.PageError(question)
+
         last_err = None
         for title in results:
             try:
@@ -202,6 +226,7 @@ class WikipediaRAG:
         try:
             logger.info(f"Query: {question}")
             page = self._resolve_page(question)
+            logger.info(f"Resolved to page: '{page.title}'")
             index = self._get_or_build_index(page)
             chunks = self._retrieve(index, question)
 
