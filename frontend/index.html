@@ -3,199 +3,295 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WikiRAG — Wikipedia, Distilled</title>
+<title>WikiRAG // Race Archive</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@600;700;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0e0d0b;
-    --surface: #1a1815;
-    --surface-raised: #211e19;
-    --border: #322d24;
-    --text: #f5f1e8;
-    --text-dim: #8c8576;
-    --text-faint: #5e594c;
-    --amber: #d4a24c;
-    --amber-dim: #8a6d35;
+    --bg: #0a0a0c;
+    --red: #e10600;
+    --red-glow: #ff1e1e;
+    --white: #f5f5f7;
+    --grey: #8a8a92;
+    --grey-dim: #55555e;
+    --card: rgba(22, 22, 26, 0.7);
+    --card-border: rgba(225, 6, 0, 0.22);
   }
 
   * { box-sizing: border-box; }
-
   html { scroll-behavior: smooth; }
 
   body {
     margin: 0;
     background: var(--bg);
-    color: var(--text);
+    color: var(--white);
     font-family: 'Inter', -apple-system, sans-serif;
     min-height: 100vh;
-    background-image:
-      radial-gradient(ellipse 800px 500px at 50% -10%, rgba(212,162,76,0.08), transparent),
-      radial-gradient(ellipse 600px 400px at 90% 90%, rgba(212,162,76,0.04), transparent);
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  .track-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    background: #0a0a0c;
+  }
+
+  .bg-video {
+    position: absolute;
+    top: 50%; left: 50%;
+    min-width: 100%;
+    min-height: 100%;
+    width: auto;
+    height: auto;
+    transform: translate(-50%, -50%);
+    object-fit: cover;
+    filter: brightness(0.5) saturate(1.15);
+  }
+
+  .checker-edge {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 5px;
+    background-image: repeating-linear-gradient(90deg, var(--white) 0 16px, var(--bg) 16px 32px);
+    opacity: 0.85;
+    z-index: 1;
+  }
+
+  .checker-edge.bottom { top: auto; bottom: 0; }
+
+  .vignette {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 90% 70% at 50% 35%, transparent 30%, rgba(0,0,0,0.75) 100%),
+      linear-gradient(180deg, rgba(10,10,12,0.55) 0%, rgba(10,10,12,0.25) 30%, rgba(10,10,12,0.55) 100%);
   }
 
   .shell {
-    max-width: 760px;
+    position: relative;
+    z-index: 2;
+    max-width: 800px;
     margin: 0 auto;
-    padding: 0 24px 140px;
+    padding: 0 24px 170px;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
   }
 
-  /* ---------- Header ---------- */
   header {
-    padding: 64px 0 28px;
+    padding: 52px 0 24px;
     text-align: center;
-    position: relative;
   }
 
   .eyebrow {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
-    letter-spacing: 0.18em;
+    letter-spacing: 0.25em;
     text-transform: uppercase;
-    color: var(--amber-dim);
-    margin-bottom: 14px;
+    color: var(--red-glow);
+    margin-bottom: 16px;
+    font-weight: 600;
   }
+
+  .eyebrow .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--red-glow);
+    box-shadow: 0 0 8px var(--red-glow);
+    margin-right: 8px;
+    vertical-align: middle;
+    animation: blink 1.4s ease-in-out infinite;
+  }
+
+  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
 
   h1 {
-    font-family: 'Fraunces', serif;
-    font-optical-sizing: auto;
-    font-weight: 600;
-    font-size: clamp(36px, 7vw, 56px);
-    letter-spacing: -0.01em;
+    font-family: 'Titillium Web', sans-serif;
+    font-weight: 900;
+    font-style: italic;
+    font-size: clamp(36px, 7vw, 58px);
     margin: 0;
+    letter-spacing: -1px;
     line-height: 1.05;
+    text-transform: uppercase;
   }
 
-  h1 .glow {
-    color: var(--amber);
+  h1 .wiki { color: var(--white); }
+
+  h1 .rag {
+    color: var(--red);
+    text-shadow: 0 0 18px rgba(225,6,0,0.55);
   }
 
   .rule {
-    width: 64px;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, var(--amber), transparent);
-    margin: 22px auto 18px;
+    width: 90px;
+    height: 4px;
+    margin: 22px auto 16px;
+    background: var(--red);
+    clip-path: polygon(0 0, 90% 0, 100% 100%, 10% 100%);
   }
 
   .tagline {
-    color: var(--text-dim);
-    font-size: 15px;
-    max-width: 420px;
+    color: var(--grey);
+    font-size: 14.5px;
+    max-width: 440px;
     margin: 0 auto;
     line-height: 1.6;
   }
 
-  /* ---------- Quick examples ---------- */
+  .demo-notice {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #ffb86b;
+    background: rgba(255, 184, 107, 0.06);
+    border: 1px solid rgba(255, 184, 107, 0.22);
+    border-radius: 8px;
+    padding: 10px 16px;
+    max-width: 480px;
+    margin: 18px auto 0;
+    line-height: 1.6;
+  }
+
   .examples {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
     justify-content: center;
-    margin: 30px 0 8px;
+    margin: 28px 0 8px;
   }
 
   .example-chip {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 12.5px;
-    color: var(--text-dim);
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 100px;
-    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--grey);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 4px;
+    padding: 9px 18px;
     cursor: pointer;
     transition: all 0.2s ease;
   }
 
   .example-chip:hover {
-    border-color: var(--amber-dim);
-    color: var(--amber);
-    background: rgba(212,162,76,0.06);
+    border-color: var(--red);
+    color: var(--white);
+    background: rgba(225,6,0,0.1);
   }
 
-  /* ---------- Chat stream ---------- */
   .stream {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     margin-top: 36px;
   }
 
   .msg {
-    display: flex;
-    flex-direction: column;
     animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   @keyframes rise {
-    from { opacity: 0; transform: translateY(10px); }
+    from { opacity: 0; transform: translateY(12px); }
     to { opacity: 1; transform: translateY(0); }
   }
 
   .msg.user {
-    align-self: flex-end;
-    max-width: 78%;
-    margin: 10px 0;
+    display: flex;
+    justify-content: flex-end;
+    margin: 12px 0;
   }
 
   .msg.user .bubble {
-    background: var(--surface-raised);
-    border: 1px solid var(--border);
-    border-radius: 16px 16px 4px 16px;
+    max-width: 78%;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 14px 14px 3px 14px;
     padding: 13px 18px;
     font-size: 15px;
-    color: var(--text);
+    color: var(--white);
   }
 
   .msg.assistant {
-    align-self: flex-start;
-    max-width: 100%;
-    margin: 14px 0;
+    margin: 16px 0;
+  }
+
+  .response-card {
+    background: var(--card);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 18px 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    position: relative;
+  }
+
+  .response-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 14px; right: 14px;
+    height: 3px;
+    background: var(--red);
+    border-radius: 0 0 3px 3px;
   }
 
   .assistant-label {
     font-family: 'JetBrains Mono', monospace;
     font-size: 10.5px;
-    letter-spacing: 0.12em;
+    font-weight: 600;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--text-faint);
-    margin-bottom: 8px;
+    color: var(--red-glow);
+    margin-bottom: 12px;
     display: flex;
     align-items: center;
     gap: 8px;
   }
 
-  .assistant-label::before {
-    content: '';
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--amber);
+  .answer-img-frame {
+    width: 100%;
+    background: #000;
+    border-radius: 10px;
+    margin-bottom: 14px;
+    border: 1px solid rgba(255,255,255,0.1);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-height: 320px;
+  }
+
+  .answer-img {
+    width: 100%;
+    height: auto;
+    max-height: 320px;
+    object-fit: contain;
+    display: block;
   }
 
   .answer-text {
     font-size: 16px;
     line-height: 1.7;
-    color: var(--text);
+    color: var(--white);
   }
 
-  /* ---------- Footnote-style sources ---------- */
   .footnote {
     margin-top: 14px;
     max-height: 0;
     overflow: hidden;
-    transition: max-height 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: max-height 0.4s ease;
   }
 
-  .footnote.open {
-    max-height: 200px;
-  }
+  .footnote.open { max-height: 200px; }
 
   .footnote-inner {
-    border-top: 1px solid var(--border);
+    border-top: 1px solid rgba(255,255,255,0.1);
     padding-top: 10px;
     display: flex;
     flex-direction: column;
@@ -204,114 +300,92 @@
 
   .footnote-toggle {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
+    font-size: 10.5px;
+    font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--amber-dim);
+    color: var(--red-glow);
     cursor: pointer;
     background: none;
     border: none;
     padding: 4px 0;
+    margin-top: 10px;
     display: inline-flex;
     align-items: center;
     gap: 6px;
   }
 
-  .footnote-toggle:hover { color: var(--amber); }
-
-  .footnote-toggle .chev {
-    transition: transform 0.3s ease;
-    font-size: 9px;
-  }
-
-  .footnote-toggle.open .chev {
-    transform: rotate(90deg);
-  }
+  .footnote-toggle .chev { transition: transform 0.3s ease; font-size: 9px; }
+  .footnote-toggle.open .chev { transform: rotate(90deg); }
 
   .footnote a {
-    color: var(--text-dim);
-    font-size: 13px;
+    color: var(--grey);
+    font-size: 12.5px;
     text-decoration: none;
-    border-bottom: 1px dotted var(--text-faint);
-    transition: color 0.2s;
+    border-bottom: 1px dotted var(--grey-dim);
   }
 
-  .footnote a:hover {
-    color: var(--amber);
-  }
+  .footnote a:hover { color: var(--white); }
 
-  /* ---------- Loading state ---------- */
   .thinking {
     display: flex;
     align-items: center;
-    gap: 10px;
-    color: var(--text-faint);
-    font-size: 14px;
-    font-style: italic;
+    gap: 12px;
+    color: var(--grey);
+    font-size: 13.5px;
+    font-family: 'JetBrains Mono', monospace;
   }
 
-  .thinking .lamp {
-    width: 8px;
-    height: 8px;
+  .light-sequence {
+    display: flex;
+    gap: 4px;
+  }
+
+  .light-sequence span {
+    width: 9px; height: 9px;
     border-radius: 50%;
-    background: var(--amber);
-    box-shadow: 0 0 8px 2px rgba(212,162,76,0.5);
-    animation: flicker 1.4s ease-in-out infinite;
+    background: rgba(225,6,0,0.25);
+    animation: lights 1.2s ease-in-out infinite;
   }
 
-  @keyframes flicker {
-    0%, 100% { opacity: 0.4; box-shadow: 0 0 4px 1px rgba(212,162,76,0.3); }
-    50% { opacity: 1; box-shadow: 0 0 12px 3px rgba(212,162,76,0.6); }
+  .light-sequence span:nth-child(1) { animation-delay: 0s; }
+  .light-sequence span:nth-child(2) { animation-delay: 0.15s; }
+  .light-sequence span:nth-child(3) { animation-delay: 0.3s; }
+  .light-sequence span:nth-child(4) { animation-delay: 0.45s; }
+  .light-sequence span:nth-child(5) { animation-delay: 0.6s; }
+
+  @keyframes lights {
+    0%, 100% { background: rgba(225,6,0,0.2); box-shadow: none; }
+    50% { background: var(--red); box-shadow: 0 0 10px var(--red-glow); }
   }
 
-  /* ---------- Input dock ---------- */
   .dock {
     position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    bottom: 0; left: 0; right: 0;
     display: flex;
     justify-content: center;
     padding: 22px 24px 28px;
-    background: linear-gradient(to top, var(--bg) 50%, transparent);
+    background: linear-gradient(to top, var(--bg) 60%, transparent);
     pointer-events: none;
+    z-index: 5;
   }
 
-  .dock-inner {
-    width: 100%;
-    max-width: 760px;
-    pointer-events: all;
-    position: relative;
-  }
-
-  .input-glow {
-    position: absolute;
-    inset: -2px;
-    border-radius: 18px;
-    background: radial-gradient(circle at 30% 0%, rgba(212,162,76,0.18), transparent 70%);
-    opacity: 0;
-    transition: opacity 0.4s ease;
-    pointer-events: none;
-  }
-
-  .input-wrap:focus-within + .input-glow,
-  .input-wrap.focused ~ .input-glow {
-    opacity: 1;
-  }
+  .dock-inner { width: 100%; max-width: 800px; pointer-events: all; }
 
   .input-wrap {
     display: flex;
     align-items: center;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 16px;
+    background: rgba(20,20,24,0.85);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 12px;
     padding: 6px 6px 6px 20px;
-    position: relative;
-    transition: border-color 0.3s ease;
+    transition: all 0.25s ease;
   }
 
   .input-wrap.focused {
-    border-color: var(--amber-dim);
+    border-color: var(--red);
+    box-shadow: 0 0 0 1px rgba(225,6,0,0.2), 0 0 24px rgba(225,6,0,0.18);
   }
 
   .input-wrap input {
@@ -319,21 +393,18 @@
     background: none;
     border: none;
     outline: none;
-    color: var(--text);
+    color: var(--white);
     font-family: 'Inter', sans-serif;
     font-size: 15px;
     padding: 14px 8px;
   }
 
-  .input-wrap input::placeholder {
-    color: var(--text-faint);
-  }
+  .input-wrap input::placeholder { color: var(--grey-dim); }
 
   .send-btn {
-    width: 38px;
-    height: 38px;
-    border-radius: 11px;
-    background: var(--amber);
+    width: 38px; height: 38px;
+    border-radius: 8px;
+    background: var(--red);
     border: none;
     cursor: pointer;
     display: flex;
@@ -343,32 +414,31 @@
     transition: all 0.2s ease;
   }
 
-  .send-btn:hover { transform: scale(1.05); }
-  .send-btn:active { transform: scale(0.95); }
-  .send-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
-
+  .send-btn:hover { box-shadow: 0 0 16px rgba(225,6,0,0.55); }
+  .send-btn:disabled { opacity: 0.3; cursor: default; box-shadow: none; }
   .send-btn svg { width: 16px; height: 16px; }
 
   .footer-credit {
     text-align: center;
     font-family: 'JetBrains Mono', monospace;
-    font-size: 10.5px;
-    letter-spacing: 0.06em;
-    color: var(--text-faint);
-    margin-top: 18px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--grey-dim);
+    margin-top: 16px;
   }
 
-  /* ---------- Mobile ---------- */
   @media (max-width: 640px) {
-    .shell { padding: 0 16px 130px; }
-    header { padding: 40px 0 20px; }
-    h1 { font-size: 32px; }
-    .tagline { font-size: 14px; }
-    .msg.user { max-width: 88%; }
+    .shell { padding: 0 16px 150px; }
+    header { padding: 34px 0 16px; }
+    h1 { font-size: 30px; }
+    .tagline { font-size: 13.5px; }
+    .msg.user .bubble { max-width: 88%; }
     .dock { padding: 16px 16px 20px; }
-    .input-wrap input { font-size: 16px; } /* prevents iOS zoom */
-    .examples { gap: 8px; }
-    .example-chip { font-size: 11.5px; padding: 7px 13px; }
+    .input-wrap input { font-size: 16px; }
+    .example-chip { font-size: 11px; padding: 7px 14px; }
+    .response-card { padding: 14px 15px; }
+    .answer-img-frame { max-height: 220px; }
+    .answer-img { max-height: 220px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -381,17 +451,29 @@
 </head>
 <body>
 
+<div class="track-bg" id="trackBg">
+  <video class="bg-video" autoplay muted loop playsinline>
+    <source src="bg_race.mp4" type="video/mp4">
+  </video>
+  <div class="checker-edge"></div>
+  <div class="checker-edge bottom"></div>
+</div>
+<div class="vignette"></div>
+
 <div class="shell">
   <header>
-    <div class="eyebrow">Local · Cited · Always Open</div>
-    <h1>Wiki<span class="glow">RAG</span></h1>
+    <div class="eyebrow"><span class="dot"></span>Live Local Inference</div>
+    <h1><span class="wiki">Wiki</span><span class="rag">RAG</span></h1>
     <div class="rule"></div>
-    <p class="tagline">Ask anything. Every answer is pulled live from Wikipedia and cited beneath, like a footnote.</p>
+    <p class="tagline">Wikipedia, retrieved and cited at race pace. Ask anything.</p>
+    <p class="demo-notice">
+      Portfolio demo — backend (FastAPI + local Ollama LLM) runs on the developer's machine and is not always online. Connection error means the backend isn't running right now.
+    </p>
 
     <div class="examples" id="examples">
-      <button class="example-chip" data-q="MS Dhoni South Africa match stats">MS Dhoni South Africa stats</button>
+      <button class="example-chip" data-q="Who is Max Verstappen?">Max Verstappen</button>
+      <button class="example-chip" data-q="MS Dhoni South Africa match stats">MS Dhoni stats</button>
       <button class="example-chip" data-q="What is the capital of Japan?">Capital of Japan</button>
-      <button class="example-chip" data-q="Who is Lewis Hamilton?">Lewis Hamilton</button>
     </div>
   </header>
 
@@ -401,14 +483,14 @@
 <div class="dock">
   <div class="dock-inner">
     <div class="input-wrap" id="inputWrap">
-      <input type="text" id="input" placeholder="Ask anything about Wikipedia…" autocomplete="off" />
+      <input type="text" id="input" placeholder="Ask anything..." autocomplete="off" />
       <button class="send-btn" id="sendBtn" disabled>
         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4 12L20 4L13 20L11 13L4 12Z" stroke="#0e0d0b" stroke-width="2" stroke-linejoin="round" fill="#0e0d0b"/>
+          <path d="M4 12L20 4L13 20L11 13L4 12Z" fill="#0a0a0c"/>
         </svg>
       </button>
     </div>
-    <div class="footer-credit">FastAPI · Ollama · ChromaDB — running locally</div>
+    <div class="footer-credit">FASTAPI · OLLAMA · CHROMADB — RUNNING LOCALLY</div>
   </div>
 </div>
 
@@ -420,6 +502,7 @@ const input = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 const inputWrap = document.getElementById('inputWrap');
 const examplesRow = document.getElementById('examples');
+const trackBg = document.getElementById('trackBg');
 
 let history = [];
 
@@ -440,35 +523,47 @@ function addUserMessage(text) {
 function addThinking() {
   const el = document.createElement('div');
   el.className = 'msg assistant';
-  el.id = 'thinking-msg';
   el.innerHTML = `
-    <div class="assistant-label">WikiRAG</div>
-    <div class="thinking"><span class="lamp"></span> Reading Wikipedia…</div>
+    <div class="response-card">
+      <div class="assistant-label">WIKIRAG</div>
+      <div class="thinking">
+        <div class="light-sequence"><span></span><span></span><span></span><span></span><span></span></div>
+        retrieving...
+      </div>
+    </div>
   `;
   stream.appendChild(el);
   scrollToBottom();
   return el;
 }
 
-function addAssistantMessage(answer, sources, thinkingEl) {
+function addAssistantMessage(answer, sources, image, thinkingEl) {
   const id = 'fn-' + Math.random().toString(36).slice(2);
+
+  const imgHtml = image
+    ? `<div class="answer-img-frame"><img class="answer-img" src="${escapeHtml(image)}" alt="" onerror="this.parentElement.style.display='none'"></div>`
+    : '';
+
   const sourcesHtml = (sources && sources.length)
     ? `
+      <button class="footnote-toggle" data-target="${id}">
+        <span class="chev">▸</span> sources (${sources.length})
+      </button>
       <div class="footnote" id="${id}">
         <div class="footnote-inner">
           ${sources.map(s => `<a href="${escapeHtml(s)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>`).join('')}
         </div>
       </div>
-      <button class="footnote-toggle" data-target="${id}">
-        <span class="chev">▸</span> Sources (${sources.length})
-      </button>
     `
     : '';
 
   thinkingEl.innerHTML = `
-    <div class="assistant-label">WikiRAG</div>
-    <div class="answer-text">${escapeHtml(answer)}</div>
-    ${sourcesHtml}
+    <div class="response-card">
+      <div class="assistant-label">WIKIRAG</div>
+      ${imgHtml}
+      <div class="answer-text">${escapeHtml(answer)}</div>
+      ${sourcesHtml}
+    </div>
   `;
 
   const toggle = thinkingEl.querySelector('.footnote-toggle');
@@ -509,15 +604,18 @@ async function sendMessage(text) {
     const data = await res.json();
     const answer = data.answer || "Sorry, I couldn't find an answer.";
     const sources = data.sources || [];
+    const image = data.image || null;
 
-    addAssistantMessage(answer, sources, thinkingEl);
+    addAssistantMessage(answer, sources, image, thinkingEl);
     history.push({ role: 'assistant', content: answer });
 
   } catch (err) {
     thinkingEl.innerHTML = `
-      <div class="assistant-label">WikiRAG</div>
-      <div class="answer-text" style="color:#c0683f;">
-        Connection error — make sure the FastAPI backend is running on port 8000.
+      <div class="response-card">
+        <div class="assistant-label">WIKIRAG</div>
+        <div class="answer-text" style="color:#ff6b6b;">
+          Connection error — backend offline or unreachable on port 8000.
+        </div>
       </div>
     `;
   }

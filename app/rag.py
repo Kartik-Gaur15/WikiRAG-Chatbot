@@ -1,297 +1,271 @@
-import logging
 import os
 import re
-import requests
+import time
+import logging
+import hashlib
+
+import wikipedia
 import chromadb
+from chromadb.utils import embedding_functions
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-WIKI_API = "https://en.wikipedia.org/w/api.php"
-HEADERS = {
-    "User-Agent": "WikiRAG-Chatbot/1.0 (educational project; contact: kartikgaur0090@gmail.com)"
-}
-
-GREETING_PATTERNS = re.compile(
-    r"^\s*(hi|hello|hey|yo|hii|hiii|heya|sup|good\s*(morning|afternoon|evening|night)|"
-    r"how\s*are\s*you|what'?s\s*up|who\s*are\s*you|thanks|thank\s*you|bye|goodbye)\s*[!.?]*\s*$",
-    re.IGNORECASE
+wikipedia.set_user_agent(
+    "WikiRAG-Chatbot/1.0 (https://github.com/kartikgaur; contact: kartik.gaur@shorthills.ai)"
 )
 
-GREETING_REPLIES = {
-    "default": "Hey! I'm WikiRAG — ask me anything and I'll pull the answer straight from Wikipedia.",
-    "who": "I'm WikiRAG, a chatbot that answers your questions using live Wikipedia content. Ask me about anything — people, places, events, stats.",
-    "thanks": "You're welcome! Let me know if you have more questions.",
-    "bye": "Goodbye! Come back anytime you want to look something up.",
-}
+CHROMA_DIR = os.getenv("CHROMA_DIR", "./chroma_store")
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 100
+TOP_K = 4
+MAX_CONTEXT_CHARS = 3000
 
-MAX_HISTORY_TURNS = 6  # last N messages to keep for context
+# FIX 1: Much tighter BAD_IMAGE_HINTS — only block truly useless UI assets.
+# The old list blocked "wiki" which appears in ALL Wikipedia image URLs,
+# and ".svg" which killed vector images. Now we only block known junk filenames.
+BAD_IMAGE_HINTS = (
+    "commons-logo", "edit-icon", "question_book", "ambox",
+    "padlock", "disambig", "loudspeaker", "stub",
+    "wikimedia-logo", "poweredby", "protect-shackle",
+)
+
+# Only allow these image extensions — filters out audio/video/misc files
+GOOD_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
 class WikipediaRAG:
-    def __init__(self, persist_dir: str = "data/chroma_db"):
+    def __init__(self):
         self.llm = ChatOllama(model="llama3.2", temperature=0.2)
 
-        self.topic_prompt = ChatPromptTemplate.from_template(
-            """Given the conversation so far and the new question, figure out what Wikipedia
-topic the new question is REALLY about. If the question uses pronouns (he, she, it, they)
-or refers to "that" / "this", resolve them using the conversation history.
-Reply with ONLY the topic name, nothing else.
-
-Conversation so far:
-{history}
-
-New question: "{question}"
-Topic:"""
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
         )
 
-        self.answer_prompt = ChatPromptTemplate.from_template(
-            """Answer the new question directly and concisely, using the Wikipedia context
-below and the conversation history for tone/continuity.
+        self.chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
 
-Rules:
-- Get straight to the point. No preamble like "Based on the context" or "According to Wikipedia".
-- Use 1-3 sentences for simple factual questions. Use more only if the question truly needs it (stats, lists).
-- Sound like a natural reply in an ongoing conversation, not an isolated lookup.
-- Never repeat the question back. Never pad with filler.
-- If the context doesn't answer it, say so briefly.
+        # FIX 2: Prompt now explicitly instructs the LLM to use chat history
+        # so follow-up queries like "in india?" get resolved in context.
+        self.prompt = ChatPromptTemplate.from_template("""
+You are a helpful assistant. Answer the question using ONLY the context below.
+If the context does not contain the answer, say you don't have enough
+information rather than guessing.
 
-Conversation so far:
+Chat history (use this to understand follow-up questions):
 {history}
 
-Wikipedia context:
+Context from Wikipedia:
 {context}
 
-New question: {question}
+Question: {question}
 
-Answer:"""
+Answer concisely and accurately based on the context above:
+""")
+
+        self.chain = self.prompt | self.llm | StrOutputParser()
+        self._answer_cache = {}
+
+    @staticmethod
+    def _collection_name(title: str) -> str:
+        h = hashlib.md5(title.lower().encode()).hexdigest()[:16]
+        return f"wiki_{h}"
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+        chunks = []
+        start = 0
+        length = len(text)
+        while start < length:
+            end = min(start + chunk_size, length)
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            if end == length:
+                break
+            start = end - overlap
+        return chunks
+
+    def _get_or_build_collection(self, page):
+        name = self._collection_name(page.title)
+        collection = self.chroma_client.get_or_create_collection(
+            name=name,
+            embedding_function=self.embedding_fn,
         )
+        if collection.count() > 0:
+            logger.info(f"Using cached collection for '{page.title}' ({collection.count()} chunks)")
+            return collection
 
-        os.makedirs(persist_dir, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=persist_dir)
-        self.collection = self.client.get_or_create_collection(name="wiki_chunks")
+        logger.info(f"Building new collection for '{page.title}'")
+        chunks = self._chunk_text(page.content)
+        if not chunks:
+            chunks = [page.summary]
 
-        self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,
-            chunk_overlap=100,
+        collection.add(
+            documents=chunks,
+            ids=[f"{name}_{i}" for i in range(len(chunks))],
         )
+        logger.info(f"Stored {len(chunks)} chunks for '{page.title}'")
+        return collection
 
-    def _slugify(self, text: str) -> str:
-        return re.sub(r'[^a-z0-9]+', '_', text.lower()).strip('_')
+    def _pick_relevant_image(self, page, query: str):
+        # FIX 3: Rewritten image picker — filter by extension first (must be
+        # a real image format), then block known junk filenames, then rank
+        # by relevance. This actually returns images now.
+        try:
+            images = page.images or []
+        except Exception as e:
+            logger.warning(f"Could not fetch images: {e}")
+            return None
 
-    def _format_history(self, chat_history: list) -> str:
+        logger.info(f"Total images found for '{page.title}': {len(images)}")
+
+        # Step 1: keep only real image files
+        candidates = [
+            url for url in images
+            if any(url.lower().endswith(ext) for ext in GOOD_EXTENSIONS)
+        ]
+        logger.info(f"Candidates after extension filter: {len(candidates)}")
+
+        # Step 2: remove known junk
+        candidates = [
+            url for url in candidates
+            if not any(bad in url.lower() for bad in BAD_IMAGE_HINTS)
+        ]
+        logger.info(f"Candidates after junk filter: {len(candidates)}")
+
+        if not candidates:
+            logger.warning(f"No usable images found for '{page.title}'")
+            return None
+
+        # Step 3: rank by how many query/title words appear in filename
+        query_words = set(re.findall(r"[a-z]+", query.lower()))
+        title_words = set(re.findall(r"[a-z]+", page.title.lower()))
+        relevant_words = {w for w in (query_words | title_words) if len(w) > 2}
+
+        best_url, best_score = candidates[0], -1
+        for url in candidates:
+            filename = url.lower().rsplit("/", 1)[-1]
+            score = sum(1 for w in relevant_words if w in filename)
+            if score > best_score:
+                best_score, best_url = score, url
+
+        logger.info(f"Selected image: {best_url}")
+        return best_url
+
+    def _resolve_page(self, question: str):
+        results = self._retry(lambda: wikipedia.search(question, results=5))
+        if not results:
+            raise wikipedia.PageError(question)
+
+        last_err = None
+        for title in results:
+            try:
+                return self._retry(
+                    lambda t=title: wikipedia.page(t, auto_suggest=False, redirect=True)
+                )
+            except wikipedia.DisambiguationError as e:
+                if e.options:
+                    try:
+                        return self._retry(
+                            lambda o=e.options[0]: wikipedia.page(o, auto_suggest=False, redirect=True)
+                        )
+                    except Exception as inner:
+                        last_err = inner
+                        continue
+            except wikipedia.PageError as e:
+                last_err = e
+                continue
+        raise last_err or wikipedia.PageError(question)
+
+    @staticmethod
+    def _retry(fn, attempts=3, delay=0.6):
+        last_exc = None
+        for i in range(attempts):
+            try:
+                return fn()
+            except (wikipedia.DisambiguationError, wikipedia.PageError):
+                raise
+            except Exception as e:
+                last_exc = e
+                logger.warning(f"Wikipedia API hiccup (attempt {i+1}/{attempts}): {e}")
+                time.sleep(delay * (i + 1))
+        raise last_exc
+
+    @staticmethod
+    def _format_history(chat_history: list) -> str:
+        # FIX 4: Convert history list into readable string for the prompt
         if not chat_history:
-            return "(no prior messages)"
-        recent = chat_history[-MAX_HISTORY_TURNS:]
+            return "No previous conversation."
         lines = []
-        for turn in recent:
-            role = turn.get("role", "user")
-            content = turn.get("content", "")
-            label = "User" if role == "user" else "WikiRAG"
-            lines.append(f"{label}: {content}")
+        for msg in chat_history:
+            role = msg.get("role", "user").capitalize()
+            content = msg.get("content", "")
+            lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
-    def _check_greeting(self, question: str):
-        q = question.strip().lower()
-        if not GREETING_PATTERNS.match(q):
-            return None
-        if "who" in q:
-            return GREETING_REPLIES["who"]
-        if "thank" in q:
-            return GREETING_REPLIES["thanks"]
-        if "bye" in q:
-            return GREETING_REPLIES["bye"]
-        return GREETING_REPLIES["default"]
-
-    def _extract_topic(self, question: str, history_text: str) -> str:
-        try:
-            chain = self.topic_prompt | self.llm | StrOutputParser()
-            topic = chain.invoke({"question": question, "history": history_text})
-            topic = topic.strip().strip('"').strip("'").strip('.')
-            topic = topic.split("\n")[0].strip()
-            logging.info(f"Extracted topic: '{topic}' from question: '{question}'")
-            return topic if topic else question
-        except Exception as e:
-            logging.warning(f"Topic extraction failed, using raw question: {e}")
-            return question
-
-    def _raw_search(self, topic: str):
-        try:
-            resp = requests.get(
-                WIKI_API,
-                params={
-                    "action": "query",
-                    "list": "search",
-                    "srsearch": topic,
-                    "format": "json",
-                    "srlimit": 3,
-                },
-                headers=HEADERS,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("query", {}).get("search", [])
-            if not results:
-                return None
-            return results[0]["title"]
-        except Exception as e:
-            logging.error(f"Wikipedia search failed: {e}")
-            return None
-
-    def _search_wikipedia(self, topic: str):
-        title = self._raw_search(topic)
-        if title:
-            return title
+    def query(self, question: str, chat_history=None):
+        # FIX 5: Don't cache follow-up queries — they depend on history
+        # Only cache if there's no chat history (first standalone question)
+        if not chat_history:
+            cache_key = question.strip().lower()
+            if cache_key in self._answer_cache:
+                logger.info(f"Cache hit: {question}")
+                return self._answer_cache[cache_key]
+        else:
+            cache_key = None
 
         try:
-            resp = requests.get(
-                WIKI_API,
-                params={
-                    "action": "opensearch",
-                    "search": topic,
-                    "limit": 3,
-                    "namespace": 0,
-                    "format": "json",
-                },
-                headers=HEADERS,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            titles = data[1] if len(data) > 1 else []
-            if titles:
-                logging.info(f"Fuzzy match found: '{titles[0]}' for '{topic}'")
-                return titles[0]
-        except Exception as e:
-            logging.warning(f"Opensearch fallback failed: {e}")
+            logger.info(f"Query: {question}")
 
-        return None
+            page = self._resolve_page(question)
+            collection = self._get_or_build_collection(page)
 
-    def _fetch_page_content(self, title: str):
-        try:
-            resp = requests.get(
-                WIKI_API,
-                params={
-                    "action": "query",
-                    "prop": "extracts|info",
-                    "exintro": False,
-                    "explaintext": True,
-                    "inprop": "url",
-                    "titles": title,
-                    "format": "json",
-                    "redirects": 1,
-                },
-                headers=HEADERS,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            pages = data.get("query", {}).get("pages", {})
-            if not pages:
-                return None
+            retrieved = collection.query(query_texts=[question], n_results=TOP_K)
+            retrieved_chunks = retrieved.get("documents", [[]])[0]
 
-            page = next(iter(pages.values()))
-            if "missing" in page:
-                return None
+            context = "\n\n".join(retrieved_chunks)[:MAX_CONTEXT_CHARS]
+            if not context.strip():
+                context = page.summary[:MAX_CONTEXT_CHARS]
 
-            return {
-                "title": page.get("title", title),
-                "content": page.get("extract", ""),
-                "url": page.get("fullurl", f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"),
-            }
-        except Exception as e:
-            logging.error(f"Wikipedia page fetch failed: {e}")
-            return None
-
-    def _ingest_page(self, title: str):
-        page_id = self._slugify(title)
-
-        existing = self.collection.get(where={"page_id": page_id}, limit=1)
-        if existing["ids"]:
-            logging.info(f"Cache hit for page: {title}")
-            return title
-
-        logging.info(f"Cache miss, fetching from Wikipedia: {title}")
-        page = self._fetch_page_content(title)
-        if not page or not page["content"]:
-            return None
-
-        chunks = self.splitter.split_text(page["content"])
-        if not chunks:
-            return None
-
-        ids = [f"{page_id}_{i}" for i in range(len(chunks))]
-        metadatas = [{"page_id": page_id, "title": page["title"], "url": page["url"]} for _ in chunks]
-
-        self.collection.add(documents=chunks, ids=ids, metadatas=metadatas)
-        logging.info(f"Cached {len(chunks)} chunks for '{page['title']}'")
-        return page["title"]
-
-    def query(self, question: str, chat_history: list = None) -> dict:
-        try:
-            logging.info(f"Received query: {question}")
-
-            greeting_reply = self._check_greeting(question)
-            if greeting_reply:
-                logging.info("Detected greeting/small talk — skipping Wikipedia.")
-                return {"answer": greeting_reply, "sources": []}
-
-            history_text = self._format_history(chat_history or [])
-
-            topic = self._extract_topic(question, history_text)
-
-            title = self._search_wikipedia(topic)
-            if not title:
-                return {
-                    "answer": f"Sorry, I couldn't find a Wikipedia page for '{topic}'.",
-                    "sources": []
-                }
-
-            resolved_title = self._ingest_page(title)
-            if not resolved_title:
-                return {
-                    "answer": f"Sorry, I couldn't load the Wikipedia page for '{title}'.",
-                    "sources": []
-                }
-
-            page_id = self._slugify(resolved_title)
-            results = self.collection.query(
-                query_texts=[question],
-                n_results=6,
-                where={"page_id": page_id},
-            )
-
-            docs = results.get("documents", [[]])[0]
-            metas = results.get("metadatas", [[]])[0]
-
-            if not docs:
-                return {
-                    "answer": "Sorry, I found the page but couldn't retrieve relevant content.",
-                    "sources": []
-                }
-
-            context = "\n\n".join(docs)
-            chain = self.answer_prompt | self.llm | StrOutputParser()
-            answer = chain.invoke({
+            history_str = self._format_history(chat_history)
+            answer = self.chain.invoke({
                 "context": context,
                 "question": question,
-                "history": history_text
+                "history": history_str,
             })
+            image_url = self._pick_relevant_image(page, question)
 
-            source_url = metas[0]["url"] if metas else None
-
-            return {
+            result = {
                 "answer": answer.strip(),
-                "sources": [source_url] if source_url else [f"Wikipedia: {resolved_title}"]
+                "sources": [page.url],
+                "image": image_url,
             }
 
-        except Exception as e:
-            logging.error(f"Error in query: {str(e)}")
+            if cache_key:
+                self._answer_cache[cache_key] = result
+            return result
+
+        except wikipedia.DisambiguationError as e:
             return {
-                "answer": f"Sorry, I had trouble answering '{question}'. Please try again.",
-                "sources": []
+                "answer": f"'{question}' is ambiguous. Did you mean one of: "
+                          f"{', '.join(e.options[:5])}?",
+                "sources": [],
+                "image": None,
+            }
+        except wikipedia.PageError:
+            return {
+                "answer": f"Sorry, I couldn't find a Wikipedia page for '{question}'. "
+                          f"Try 'Lewis Hamilton' or 'MS Dhoni'.",
+                "sources": [],
+                "image": None,
+            }
+        except Exception as e:
+            logger.error(f"Error: {str(e)}", exc_info=True)
+            return {
+                "answer": f"Sorry, something went wrong answering '{question}'. Please try again.",
+                "sources": [],
+                "image": None,
             }
