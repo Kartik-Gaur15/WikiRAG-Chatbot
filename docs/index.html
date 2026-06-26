@@ -642,3 +642,15 @@ examplesRow.addEventListener('click', (e) => {
 
 </body>
 </html>
+<script>
+// Keep Render backend alive by pinging every 10 minutes
+setInterval(() => {
+  fetch("https://wikirag-chatbot.onrender.com/health")
+    .then(() => console.log("Backend kept alive"))
+    .catch(() => console.log("Backend ping failed"));
+}, 10 * 60 * 1000);
+
+// Also ping immediately on page load to wake it up
+fetch("https://wikirag-chatbot.onrender.com/health")
+  .catch(() => {});
+</script>
