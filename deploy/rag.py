@@ -3,11 +3,10 @@ import re
 import time
 import logging
 import hashlib
-from typing import List
+import numpy as np
+from typing import List, Dict
 
 import wikipedia
-import chromadb
-import chromadb.api
 from groq import Groq
 
 logging.basicConfig(level=logging.INFO)
@@ -17,7 +16,6 @@ wikipedia.set_user_agent(
     "WikiRAG-Chatbot/1.0 (https://github.com/kartikgaur; contact: kartik.gaur@shorthills.ai)"
 )
 
-CHROMA_DIR = "/tmp/chroma_store"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 TOP_K = 4
@@ -32,27 +30,19 @@ BAD_IMAGE_HINTS = (
 GOOD_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
-class SimpleEmbeddingFunction(chromadb.api.types.EmbeddingFunction):
-    """
-    Lightweight hash-based embedding — no ML model, no GPU, ~0 MB RAM.
-    Good enough for RAG over Wikipedia chunks where keyword overlap matters.
-    """
-    DIM = 256
+def simple_embed(text: str, dim: int = 512) -> np.ndarray:
+    """Lightweight TF-IDF-style bag-of-words embedding. Zero dependencies."""
+    vec = np.zeros(dim, dtype=np.float32)
+    words = re.findall(r"[a-z]+", text.lower())
+    for word in words:
+        h = int(hashlib.md5(word.encode()).hexdigest(), 16)
+        vec[h % dim] += 1.0
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
 
-    def __call__(self, input: List[str]) -> List[List[float]]:
-        results = []
-        for text in input:
-            vec = [0.0] * self.DIM
-            words = re.findall(r"[a-z]+", text.lower())
-            for word in words:
-                h = int(hashlib.md5(word.encode()).hexdigest(), 16)
-                idx = h % self.DIM
-                vec[idx] += 1.0
-            # L2 normalise
-            norm = sum(x * x for x in vec) ** 0.5 or 1.0
-            vec = [x / norm for x in vec]
-            results.append(vec)
-        return results
+
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b))
 
 
 class WikipediaRAG:
@@ -61,14 +51,9 @@ class WikipediaRAG:
         if not api_key:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         self.groq = Groq(api_key=api_key)
-        self.embedding_fn = SimpleEmbeddingFunction()
-        self.chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-        self._answer_cache = {}
-
-    @staticmethod
-    def _collection_name(title: str) -> str:
-        h = hashlib.md5(title.lower().encode()).hexdigest()[:16]
-        return f"wiki_{h}"
+        # In-memory store: title -> {"chunks": [...], "embeddings": [...]}
+        self._store: Dict[str, dict] = {}
+        self._answer_cache: Dict[str, dict] = {}
 
     @staticmethod
     def _chunk_text(text: str, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
@@ -84,24 +69,27 @@ class WikipediaRAG:
             start = end - overlap
         return chunks
 
-    def _get_or_build_collection(self, page):
-        name = self._collection_name(page.title)
-        collection = self.chroma_client.get_or_create_collection(
-            name=name,
-            embedding_function=self.embedding_fn,
-        )
-        if collection.count() > 0:
-            logger.info(f"Using cached collection for '{page.title}'")
-            return collection
+    def _get_or_build_index(self, page):
+        key = page.title.lower()
+        if key in self._store:
+            logger.info(f"Using cached index for '{page.title}'")
+            return self._store[key]
 
-        logger.info(f"Building new collection for '{page.title}'")
+        logger.info(f"Building index for '{page.title}'")
         chunks = self._chunk_text(page.content) or [page.summary]
-        collection.add(
-            documents=chunks,
-            ids=[f"{name}_{i}" for i in range(len(chunks))],
-        )
-        logger.info(f"Stored {len(chunks)} chunks for '{page.title}'")
-        return collection
+        embeddings = [simple_embed(c) for c in chunks]
+        self._store[key] = {"chunks": chunks, "embeddings": embeddings}
+        logger.info(f"Indexed {len(chunks)} chunks for '{page.title}'")
+        return self._store[key]
+
+    def _retrieve(self, index: dict, question: str, top_k=TOP_K) -> List[str]:
+        q_vec = simple_embed(question)
+        scored = [
+            (cosine_similarity(q_vec, emb), chunk)
+            for emb, chunk in zip(index["embeddings"], index["chunks"])
+        ]
+        scored.sort(reverse=True, key=lambda x: x[0])
+        return [chunk for _, chunk in scored[:top_k]]
 
     def _pick_relevant_image(self, page, query: str):
         try:
@@ -174,12 +162,10 @@ class WikipediaRAG:
     def _format_history(chat_history: list) -> str:
         if not chat_history:
             return "No previous conversation."
-        lines = []
-        for msg in chat_history:
-            role = msg.get("role", "user").capitalize()
-            content = msg.get("content", "")
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines)
+        return "\n".join(
+            f"{m.get('role','user').capitalize()}: {m.get('content','')}"
+            for m in chat_history
+        )
 
     def _ask_groq(self, context: str, question: str, history_str: str) -> str:
         system = (
@@ -191,7 +177,7 @@ class WikipediaRAG:
             f"Chat history:\n{history_str}\n\n"
             f"Context from Wikipedia:\n{context}\n\n"
             f"Question: {question}\n\n"
-            "Answer concisely and accurately based on the context above:"
+            "Answer concisely and accurately:"
         )
         response = self.groq.chat.completions.create(
             model=GROQ_MODEL,
@@ -216,24 +202,17 @@ class WikipediaRAG:
         try:
             logger.info(f"Query: {question}")
             page = self._resolve_page(question)
-            collection = self._get_or_build_collection(page)
+            index = self._get_or_build_index(page)
+            chunks = self._retrieve(index, question)
 
-            retrieved = collection.query(query_texts=[question], n_results=TOP_K)
-            retrieved_chunks = retrieved.get("documents", [[]])[0]
-
-            context = "\n\n".join(retrieved_chunks)[:MAX_CONTEXT_CHARS]
+            context = "\n\n".join(chunks)[:MAX_CONTEXT_CHARS]
             if not context.strip():
                 context = page.summary[:MAX_CONTEXT_CHARS]
 
-            history_str = self._format_history(chat_history)
-            answer = self._ask_groq(context, question, history_str)
+            answer = self._ask_groq(context, question, self._format_history(chat_history))
             image_url = self._pick_relevant_image(page, question)
 
-            result = {
-                "answer": answer,
-                "sources": [page.url],
-                "image": image_url,
-            }
+            result = {"answer": answer, "sources": [page.url], "image": image_url}
             if cache_key:
                 self._answer_cache[cache_key] = result
             return result
@@ -241,19 +220,16 @@ class WikipediaRAG:
         except wikipedia.DisambiguationError as e:
             return {
                 "answer": f"'{question}' is ambiguous. Did you mean: {', '.join(e.options[:5])}?",
-                "sources": [],
-                "image": None,
+                "sources": [], "image": None,
             }
         except wikipedia.PageError:
             return {
                 "answer": f"Sorry, I couldn't find a Wikipedia page for '{question}'.",
-                "sources": [],
-                "image": None,
+                "sources": [], "image": None,
             }
         except Exception as e:
             logger.error(f"Error: {str(e)}", exc_info=True)
             return {
                 "answer": "Sorry, something went wrong. Please try again.",
-                "sources": [],
-                "image": None,
+                "sources": [], "image": None,
             }
