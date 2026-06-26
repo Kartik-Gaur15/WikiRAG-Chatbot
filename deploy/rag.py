@@ -3,10 +3,11 @@ import re
 import time
 import logging
 import hashlib
+from typing import List
 
 import wikipedia
 import chromadb
-from chromadb.utils import embedding_functions
+import chromadb.api
 from groq import Groq
 
 logging.basicConfig(level=logging.INFO)
@@ -16,12 +17,12 @@ wikipedia.set_user_agent(
     "WikiRAG-Chatbot/1.0 (https://github.com/kartikgaur; contact: kartik.gaur@shorthills.ai)"
 )
 
-CHROMA_DIR   = os.getenv("CHROMA_DIR", "/tmp/chroma_store")
-CHUNK_SIZE   = 800
+CHROMA_DIR = "/tmp/chroma_store"
+CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
-TOP_K        = 4
+TOP_K = 4
 MAX_CONTEXT_CHARS = 3000
-GROQ_MODEL   = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 BAD_IMAGE_HINTS = (
     "commons-logo", "edit-icon", "question_book", "ambox",
@@ -31,16 +32,36 @@ BAD_IMAGE_HINTS = (
 GOOD_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
+class SimpleEmbeddingFunction(chromadb.api.types.EmbeddingFunction):
+    """
+    Lightweight hash-based embedding — no ML model, no GPU, ~0 MB RAM.
+    Good enough for RAG over Wikipedia chunks where keyword overlap matters.
+    """
+    DIM = 256
+
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        results = []
+        for text in input:
+            vec = [0.0] * self.DIM
+            words = re.findall(r"[a-z]+", text.lower())
+            for word in words:
+                h = int(hashlib.md5(word.encode()).hexdigest(), 16)
+                idx = h % self.DIM
+                vec[idx] += 1.0
+            # L2 normalise
+            norm = sum(x * x for x in vec) ** 0.5 or 1.0
+            vec = [x / norm for x in vec]
+            results.append(vec)
+        return results
+
+
 class WikipediaRAG:
     def __init__(self):
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         self.groq = Groq(api_key=api_key)
-
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
+        self.embedding_fn = SimpleEmbeddingFunction()
         self.chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
         self._answer_cache = {}
 
@@ -176,7 +197,7 @@ class WikipediaRAG:
             model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user",   "content": user_msg},
+                {"role": "user", "content": user_msg},
             ],
             temperature=0.2,
             max_tokens=512,
@@ -194,10 +215,10 @@ class WikipediaRAG:
 
         try:
             logger.info(f"Query: {question}")
-            page       = self._resolve_page(question)
+            page = self._resolve_page(question)
             collection = self._get_or_build_collection(page)
 
-            retrieved        = collection.query(query_texts=[question], n_results=TOP_K)
+            retrieved = collection.query(query_texts=[question], n_results=TOP_K)
             retrieved_chunks = retrieved.get("documents", [[]])[0]
 
             context = "\n\n".join(retrieved_chunks)[:MAX_CONTEXT_CHARS]
@@ -205,13 +226,13 @@ class WikipediaRAG:
                 context = page.summary[:MAX_CONTEXT_CHARS]
 
             history_str = self._format_history(chat_history)
-            answer      = self._ask_groq(context, question, history_str)
-            image_url   = self._pick_relevant_image(page, question)
+            answer = self._ask_groq(context, question, history_str)
+            image_url = self._pick_relevant_image(page, question)
 
             result = {
-                "answer":  answer,
+                "answer": answer,
                 "sources": [page.url],
-                "image":   image_url,
+                "image": image_url,
             }
             if cache_key:
                 self._answer_cache[cache_key] = result
@@ -219,20 +240,20 @@ class WikipediaRAG:
 
         except wikipedia.DisambiguationError as e:
             return {
-                "answer":  f"'{question}' is ambiguous. Did you mean: {', '.join(e.options[:5])}?",
+                "answer": f"'{question}' is ambiguous. Did you mean: {', '.join(e.options[:5])}?",
                 "sources": [],
-                "image":   None,
+                "image": None,
             }
         except wikipedia.PageError:
             return {
-                "answer":  f"Sorry, I couldn't find a Wikipedia page for '{question}'.",
+                "answer": f"Sorry, I couldn't find a Wikipedia page for '{question}'.",
                 "sources": [],
-                "image":   None,
+                "image": None,
             }
         except Exception as e:
             logger.error(f"Error: {str(e)}", exc_info=True)
             return {
-                "answer":  "Sorry, something went wrong. Please try again.",
+                "answer": "Sorry, something went wrong. Please try again.",
                 "sources": [],
-                "image":   None,
+                "image": None,
             }
