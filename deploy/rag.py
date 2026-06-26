@@ -4,7 +4,7 @@ import time
 import logging
 import hashlib
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import wikipedia
 from groq import Groq
@@ -18,15 +18,19 @@ wikipedia.set_user_agent(
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
-TOP_K = 4
-MAX_CONTEXT_CHARS = 3000
+TOP_K = 6
+MAX_CONTEXT_CHARS = 4000
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 BAD_IMAGE_HINTS = (
-    "commons-logo", "edit-icon", "question_book", "ambox",
-    "padlock", "disambig", "loudspeaker", "stub",
-    "wikimedia-logo", "poweredby", "protect-shackle",
+    "commons-logo", "edit-icon", "question_book", "ambox", "padlock",
+    "disambig", "loudspeaker", "stub", "wikimedia-logo", "poweredby",
+    "protect-shackle", "anatomy", "diagram", "skeleton", "muscle",
+    "medical", "flag", "coat_of_arms", "symbol", "icon", "logo",
+    "seal", "stamp", "currency", "badge", "sign", "silhouette",
+    "placeholder", "default", "unknown", "blank",
 )
+
 GOOD_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 
@@ -42,6 +46,51 @@ def simple_embed(text: str, dim: int = 512) -> np.ndarray:
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
+
+
+def extract_topic_with_groq(question: str, groq_client, chat_history: list = None) -> str:
+    history_str = ""
+    if chat_history:
+        history_str = "\n".join(
+            f"{m.get('role','user').capitalize()}: {m.get('content','')}"
+            for m in chat_history[-6:]
+        )
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Given the chat history and current question, extract the main Wikipedia search topic. "
+                        "Resolve pronouns (his, her, their, it, he, she, they) using the chat history. "
+                        "Return ONLY the topic name, nothing else. Be specific with product names.\n\n"
+                        "Examples:\n"
+                        "Q: iphone 14 pro → iPhone 14 Pro\n"
+                        "Q: iphone 16 pro → iPhone 16 Pro\n"
+                        "Q: who was babur → Babur\n"
+                        "Q: What is the capital of Japan? → Japan\n"
+                        "Q: Who is Lewis Hamilton? → Lewis Hamilton\n"
+                        "Q: What are MS Dhoni stats? → MS Dhoni\n"
+                        "History: 'User: who was babur / Assistant: Babur was...'\n"
+                        "Q: who was his son → Humayun\n"
+                        "Q: who was his sister → Khanzada Begum"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Chat history:\n{history_str}\n\nQuestion: {question}"
+                }
+            ],
+            temperature=0,
+            max_tokens=30,
+        )
+        topic = response.choices[0].message.content.strip()
+        logger.info(f"Extracted topic: '{topic}' from: '{question}'")
+        return topic
+    except Exception as e:
+        logger.warning(f"Topic extraction failed: {e}")
+        return question
 
 
 class WikipediaRAG:
@@ -67,13 +116,47 @@ class WikipediaRAG:
             start = end - overlap
         return chunks
 
+    @staticmethod
+    def _extract_stats_sections(content: str) -> str:
+        stat_keywords = [
+            "statistics", "career statistics", "records", "achievements",
+            "championships", "world championship", "season results",
+            "batting", "bowling", "formula one career", "race wins",
+            "pole positions", "fastest laps", "grand prix", "innings",
+            "centuries", "half-centuries", "wickets", "averages"
+        ]
+        lines = content.split("\n")
+        stat_sections = []
+        capture = False
+        buffer = []
+        for line in lines:
+            lower = line.lower().strip()
+            if any(kw in lower for kw in stat_keywords):
+                capture = True
+                buffer = [line]
+            elif capture:
+                if line.strip() == "" and len(buffer) > 5:
+                    stat_sections.append("\n".join(buffer))
+                    buffer = []
+                    capture = False
+                else:
+                    buffer.append(line)
+        if buffer:
+            stat_sections.append("\n".join(buffer))
+        return "\n\n".join(stat_sections)
+
     def _get_or_build_index(self, page):
         key = page.title.lower()
         if key in self._store:
             logger.info(f"Using cached index for '{page.title}'")
             return self._store[key]
         logger.info(f"Building index for '{page.title}'")
-        chunks = self._chunk_text(page.content) or [page.summary]
+        content = page.content
+        chunks = self._chunk_text(content) or [page.summary]
+        stats = self._extract_stats_sections(content)
+        if stats:
+            stat_chunks = self._chunk_text(stats)
+            chunks = stat_chunks + chunks
         embeddings = [simple_embed(c) for c in chunks]
         self._store[key] = {"chunks": chunks, "embeddings": embeddings}
         logger.info(f"Indexed {len(chunks)} chunks for '{page.title}'")
@@ -88,13 +171,14 @@ class WikipediaRAG:
         scored.sort(reverse=True, key=lambda x: x[0])
         return [chunk for _, chunk in scored[:top_k]]
 
-    def _pick_relevant_image(self, page, query: str):
+    def _pick_relevant_image(self, page, topic: str) -> Optional[str]:
         try:
             images = page.images or []
         except Exception as e:
             logger.warning(f"Could not fetch images: {e}")
             return None
 
+        # Step 1: extension + blocklist filter
         candidates = [
             url for url in images
             if any(url.lower().endswith(ext) for ext in GOOD_EXTENSIONS)
@@ -103,70 +187,78 @@ class WikipediaRAG:
         if not candidates:
             return None
 
-        query_words = set(re.findall(r"[a-z]+", query.lower()))
-        title_words = set(re.findall(r"[a-z]+", page.title.lower()))
-        relevant_words = {w for w in (query_words | title_words) if len(w) > 2}
+        # Step 2: score by topic word match in filename
+        topic_words = {w for w in re.findall(r"[a-z0-9]+", topic.lower()) if len(w) > 2}
 
-        best_url, best_score = candidates[0], -1
+        scored = []
         for url in candidates:
             filename = url.lower().rsplit("/", 1)[-1]
-            score = sum(1 for w in relevant_words if w in filename)
-            if score > best_score:
-                best_score, best_url = score, url
+            score = sum(1 for w in topic_words if w in filename)
+            scored.append((score, url))
 
-        logger.info(f"Selected image: {best_url}")
-        return best_url
+        scored.sort(reverse=True, key=lambda x: x[0])
+        best_score, best_url = scored[0]
 
-    def _resolve_page(self, question: str):
-        # FIX: Use wikipedia.summary first to get the most relevant page
-        # then fall back to search if that fails
-        try:
-            # Try direct summary — this hits the most relevant page directly
-            summary = self._retry(
-                lambda: wikipedia.summary(question, sentences=1, auto_suggest=True)
-            )
-            # Now get the full page using the same query
-            return self._retry(
-                lambda: wikipedia.page(question, auto_suggest=True, redirect=True)
-            )
-        except wikipedia.DisambiguationError as e:
-            # Pick first option from disambiguation
-            if e.options:
+        # Step 3: if topic word matches, return it
+        if best_score > 0:
+            logger.info(f"Image selected (score={best_score}): {best_url}")
+            return best_url
+
+        # Step 4: fallback — return first clean candidate
+        # (better to show something relevant than nothing)
+        logger.info(f"No topic match in filename, using first clean candidate: {candidates[0]}")
+        return candidates[0]
+
+    def _resolve_page(self, topic: str):
+        """
+        FIX: Search Wikipedia with the exact topic first,
+        then fall back to auto_suggest only if exact match fails.
+        This prevents 'iPhone 14 Pro' from landing on 'iPhone 12 Pro'.
+        """
+        last_err = None
+
+        # Try exact search first (most reliable for product names)
+        results = self._retry(lambda: wikipedia.search(topic, results=8))
+        if results:
+            # Find exact or closest title match
+            topic_lower = topic.lower()
+            exact = [t for t in results if t.lower() == topic_lower]
+            close = [t for t in results if topic_lower in t.lower()]
+            ordered = exact + [t for t in close if t not in exact] + \
+                      [t for t in results if t not in exact and t not in close]
+
+            for title in ordered:
                 try:
                     return self._retry(
-                        lambda o=e.options[0]: wikipedia.page(o, auto_suggest=False, redirect=True)
+                        lambda t=title: wikipedia.page(t, auto_suggest=False, redirect=True)
                     )
-                except Exception:
-                    pass
-        except wikipedia.PageError:
-            pass
-        except Exception:
-            pass
-
-        # Fall back to search
-        results = self._retry(lambda: wikipedia.search(question, results=5))
-        if not results:
-            raise wikipedia.PageError(question)
-
-        last_err = None
-        for title in results:
-            try:
-                return self._retry(
-                    lambda t=title: wikipedia.page(t, auto_suggest=False, redirect=True)
-                )
-            except wikipedia.DisambiguationError as e:
-                if e.options:
-                    try:
-                        return self._retry(
-                            lambda o=e.options[0]: wikipedia.page(o, auto_suggest=False, redirect=True)
+                except wikipedia.DisambiguationError as e:
+                    if e.options:
+                        # Pick option closest to topic
+                        best = next(
+                            (o for o in e.options if topic_lower in o.lower()),
+                            e.options[0]
                         )
-                    except Exception as inner:
-                        last_err = inner
-                        continue
-            except wikipedia.PageError as e:
-                last_err = e
-                continue
-        raise last_err or wikipedia.PageError(question)
+                        try:
+                            return self._retry(
+                                lambda o=best: wikipedia.page(o, auto_suggest=False, redirect=True)
+                            )
+                        except Exception as inner:
+                            last_err = inner
+                            continue
+                except wikipedia.PageError as e:
+                    last_err = e
+                    continue
+
+        # Last resort: auto_suggest
+        try:
+            return self._retry(
+                lambda: wikipedia.page(topic, auto_suggest=True, redirect=True)
+            )
+        except Exception as e:
+            last_err = e
+
+        raise last_err or wikipedia.PageError(topic)
 
     @staticmethod
     def _retry(fn, attempts=3, delay=0.6):
@@ -193,13 +285,14 @@ class WikipediaRAG:
 
     def _ask_groq(self, context: str, question: str, history_str: str) -> str:
         system = (
-            "You are a helpful assistant. Answer the question using ONLY "
-            "the Wikipedia context provided. If the context does not contain "
-            "the answer, say you don't have enough information rather than guessing."
+            "You are a knowledgeable assistant with access to Wikipedia data. "
+            "Answer the question using the context provided. "
+            "For statistical questions, extract and present relevant numbers, years, and records clearly. "
+            "If the context does not contain enough information, say so honestly."
         )
         user_msg = (
             f"Chat history:\n{history_str}\n\n"
-            f"Context from Wikipedia:\n{context}\n\n"
+            f"Wikipedia context:\n{context}\n\n"
             f"Question: {question}\n\n"
             "Answer concisely and accurately:"
         )
@@ -210,12 +303,15 @@ class WikipediaRAG:
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.2,
-            max_tokens=512,
+            max_tokens=600,
         )
         return response.choices[0].message.content.strip()
 
     def query(self, question: str, chat_history=None):
-        if not chat_history:
+        has_pronouns = bool(re.search(
+            r'\b(his|her|their|its|he|she|they|him|them)\b', question.lower()
+        ))
+        if not chat_history and not has_pronouns:
             cache_key = question.strip().lower()
             if cache_key in self._answer_cache:
                 logger.info(f"Cache hit: {question}")
@@ -225,8 +321,10 @@ class WikipediaRAG:
 
         try:
             logger.info(f"Query: {question}")
-            page = self._resolve_page(question)
+            topic = extract_topic_with_groq(question, self.groq, chat_history)
+            page = self._resolve_page(topic)
             logger.info(f"Resolved to page: '{page.title}'")
+
             index = self._get_or_build_index(page)
             chunks = self._retrieve(index, question)
 
@@ -235,7 +333,7 @@ class WikipediaRAG:
                 context = page.summary[:MAX_CONTEXT_CHARS]
 
             answer = self._ask_groq(context, question, self._format_history(chat_history))
-            image_url = self._pick_relevant_image(page, question)
+            image_url = self._pick_relevant_image(page, topic)
 
             result = {"answer": answer, "sources": [page.url], "image": image_url}
             if cache_key:
