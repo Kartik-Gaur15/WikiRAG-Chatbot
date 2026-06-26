@@ -1,19 +1,9 @@
-# Python
 venv/
+chroma_store/
 __pycache__/
 *.pyc
-.Python
-
-# Environment
 .env
-
-# Data / cache (regenerates automatically on first run)
-data/chroma_db/
-cache/
-logs/
-
-# OS
+*.egg-info/
 .DS_Store
-
-# Editor
-.vscode/
+logs/
+cache/
